@@ -1,9 +1,11 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <stdint.h>
 #import <stdbool.h>
+#import <math.h>
 
 // ============================================================================
 // RVA И ОФФСЕТЫ ИЗ DUMP.CS (Image 0: Assembly-CSharp.dll)
@@ -49,8 +51,8 @@ namespace Offsets {
     constexpr uintptr_t BS_Field_dunkJumpCap                  = 0x5AC; // float
     constexpr uintptr_t BS_Field_contestEnabled               = 0xAF0; // bool
     constexpr uintptr_t BS_Field_contestMaxPenalty            = 0xAF4; // float
-    constexpr uintptr_t BS_Field_releaseBand01_x              = 0xB44; // float (Vector2.x)
-    constexpr uintptr_t BS_Field_releaseBand01_y              = 0xB48; // float (Vector2.y)
+    constexpr uintptr_t BS_Field_releaseBand01_x              = 0xB44; // float
+    constexpr uintptr_t BS_Field_releaseBand01_y              = 0xB48; // float
     constexpr uintptr_t BS_Field_contestWindowShrink          = 0xB98; // float
     constexpr uintptr_t BS_Field_perfectReleaseError01        = 0xB9C; // float
     constexpr uintptr_t BS_Field_perfectMakeChanceUncontested = 0xBA0; // float
@@ -103,27 +105,47 @@ namespace Offsets {
     constexpr uintptr_t DR_Field_phasesOn              = 0xBC;  // bool
     constexpr uintptr_t DR_Field_smartOn               = 0x118; // bool
     constexpr uintptr_t DR_Field_shotReadOn            = 0x134; // bool
+
+    // BackboardLights (TypeDefIndex: 27)
+    constexpr uintptr_t BackboardLights_get_Active     = 0x18E9394;
+    constexpr uintptr_t BackboardLights_PlayMake       = 0x18EACD4;
+    constexpr uintptr_t BL_Field_makeColor_r           = 0x4C;  // float
+    constexpr uintptr_t BL_Field_makeColor_g           = 0x50;  // float
+    constexpr uintptr_t BL_Field_makeColor_b           = 0x54;  // float
+    constexpr uintptr_t BL_Field_makeColor_a           = 0x58;  // float
+    constexpr uintptr_t BL_Field_brightness            = 0x5C;  // float
 }
 
 // ============================================================================
-// СТРУКТУРА КОНФИГУРАЦИИ ЧИТА (ВСЕ АКТУАЛЬНЫЕ ФУНКЦИИ)
+// СОСТОЯНИЕ МОДИФИКАЦИИ И КОСМИЧЕСКИХ ЭФФЕКТОВ
 // ============================================================================
 struct ModConfig {
-    bool autoGreenRelease  = false; // 1. Auto Green Release (100% попадание + широкое зелёное окно)
-    bool noContestPenalty  = false; // 2. Игнорировать защиту (No Contest Penalty)
-    bool longRangeDunk     = false; // 3. Дальние данки (Long Range Dunk с 12-15 м)
-    bool freezeShotClock   = false; // 4. Заморозка таймера владения (14 сек)
-    bool freezeOvertime    = false; // 5. Заморозка таймера Overtime (60 сек, без штрафов)
-    bool infiniteStops     = false; // 6. Бесконечные жизни / 0 потерь
-    bool maxStyleMult      = false; // 7. Множитель стиля x10 + несгораемый банк
-    bool alwaysOnFire      = false; // 8. Вечный огонь (Max Heat / Tier 3 On Fire)
-    bool alwaysThreePoint  = false; // 9. Каждый бросок считается 3-очковым
-    bool disableDefender   = false; // 10. Отключить перехваты и чтение бросков у защитника
-    bool instantWin15Pt    = false; // 11. Победа за 1 мяч (15pt Mode)
+    // Геймплей
+    bool autoGreenRelease  = false;
+    bool noContestPenalty  = false;
+    bool longRangeDunk     = false;
+    bool freezeShotClock   = false;
+    bool freezeOvertime    = false;
+    bool infiniteStops     = false;
+    bool maxStyleMult      = false;
+    bool alwaysOnFire      = false;
+    bool alwaysThreePoint  = false;
+    bool disableDefender   = false;
+    bool instantWin15Pt    = false;
+    bool rainbowBackboard  = false; // RGB-неон подсветки баскетбольного щита
+
+    // Визуальные эффекты меню (Settings)
+    bool fxStarfield       = true;  // Анимированные космические звёзды на фоне
+    bool fxNeonPulse       = true;  // Неоновое переливающееся свечение рамки
+    bool fxHaptics         = true;  // Тактильный отклик при нажатиях
+    int  themePreset       = 0;     // 0: Nebula Violet, 1: Cyber Supernova, 2: Crimson Pulsar
+    float menuOpacity      = 0.94f; // Непрозрачность меню (0.45 .. 1.0)
+    int  lang              = 0;     // 0: RU, 1: EN, 2: AR
 };
 
 static ModConfig g_Config;
 static uintptr_t g_UnityBase = 0;
+static float g_HuePhase = 0.0f;
 
 struct Il2CppArrayHeader {
     void *klass;
@@ -185,6 +207,173 @@ using Fn_OvertimeClock_get_Instance = uintptr_t (*)(const void *method);
 using Fn_Heat_get_Instance          = uintptr_t (*)(const void *method);
 using Fn_StyleScore_get_Instance    = uintptr_t (*)(const void *method);
 using Fn_StyleScore_NotePerfect     = void (*)(const void *method);
+using Fn_Backboard_get_Active       = uintptr_t (*)(const void *method);
+using Fn_Backboard_PlayMake         = void (*)(uintptr_t instance, const void *method);
+
+// ============================================================================
+// ЛОКАЛИЗАЦИЯ: РУССКИЙ (0) | ENGLISH (1) | العربية (2)
+// ============================================================================
+enum LKey : int {
+    LK_HEADER_SUB = 0,
+    LK_TAB_HACKS,
+    LK_TAB_SETTINGS,
+    LK_TAB_CREATOR,
+    LK_SEC_SHOOTING,
+    LK_SEC_TIMERS,
+    LK_SEC_ECONOMY,
+    LK_T_AUTOGREEN,
+    LK_T_NOCONTEST,
+    LK_T_LONGDUNK,
+    LK_T_ALWAYS3PT,
+    LK_T_ONFIRE,
+    LK_T_MAXSTYLE,
+    LK_T_SHOTCLOCK,
+    LK_T_OVERTIME,
+    LK_T_NOSTOPS,
+    LK_T_NODEFENDER,
+    LK_T_INSTANTWIN,
+    LK_T_RGBBOARD,
+    LK_B_CASH100K,
+    LK_B_CASH1M,
+    LK_B_UNLOCKALL,
+    LK_B_BATTLEPASS,
+    LK_B_LUCKYDROP,
+    LK_B_INSTANTMAKE,
+    LK_B_SKIPTUT,
+    LK_B_BOARDPULSE,
+    LK_SET_LANG_HDR,
+    LK_SET_OPACITY_HDR,
+    LK_SET_THEME_HDR,
+    LK_SET_FX_HDR,
+    LK_FX_STARFIELD,
+    LK_FX_NEONPULSE,
+    LK_FX_HAPTICS,
+    LK_THEME_NEBULA,
+    LK_THEME_CYBER,
+    LK_THEME_PULSAR,
+    LK_CR_ROLE,
+    LK_CR_BIO,
+    LK_CR_OPEN_TG,
+    LK_CR_COPY_TG,
+    LK_NOTE_100K,
+    LK_NOTE_1M,
+    LK_NOTE_ITEMS,
+    LK_NOTE_PASS,
+    LK_NOTE_DROP,
+    LK_NOTE_MAKE,
+    LK_NOTE_TUT,
+    LK_NOTE_COPIED,
+    LK_COUNT
+};
+
+static NSString *const kLocTable[LK_COUNT][3] = {
+    // LK_HEADER_SUB
+    {@"КОСМИЧЕСКАЯ ПАНЕЛЬ", @"COSMIC EDITION", @"الإصدار الفضائي"},
+    // LK_TAB_HACKS
+    {@"Функции", @"Hacks", @"الغش"},
+    // LK_TAB_SETTINGS
+    {@"Настройки", @"Settings", @"الإعدادات"},
+    // LK_TAB_CREATOR
+    {@"Автор", @"Creator", @"المطور"},
+    // LK_SEC_SHOOTING
+    {@"✦ БРОСКИ, ДАНКИ И СТИЛЬ", @"✦ SHOOTING, DUNKS & STYLE", @"✦ التسديد والدانك والأسلوب"},
+    // LK_SEC_TIMERS
+    {@"✦ ТАЙМЕРЫ, ЗАЩИТА И РЕЖИМЫ", @"✦ TIMERS, DEFENSE & MODES", @"✦ المؤقت والدفاع والأطوار"},
+    // LK_SEC_ECONOMY
+    {@"✦ ЭКОНОМИКА, ГАРДЕРОБ И ПРОПУСК", @"✦ ECONOMY, WARDROBE & PASS", @"✦ الاقتصاد والملابس والسيزون"},
+    // LK_T_AUTOGREEN
+    {@"Авто-идеальный бросок (Auto Green)", @"Auto Green Release (100% Make)", @"رمية خضراء تلقائية (100%)"},
+    // LK_T_NOCONTEST
+    {@"Игнорировать защиту (No Contest)", @"Ignore Defender Contest", @"تجاهل دفاع الخصم"},
+    // LK_T_LONGDUNK
+    {@"Дальние данки (Long Range Dunk)", @"Long Range Dunks (15m)", @"دانك من مسافة بعيدة"},
+    // LK_T_ALWAYS3PT
+    {@"Каждый бросок = 3 очка", @"Every Shot Counts as 3-Pointer", @"كل رمية تحسب 3 نقاط"},
+    // LK_T_ONFIRE
+    {@"Вечный огонь (Always On Fire)", @"Always On Fire (Max Heat Tier 3)", @"شعلة دائمة (أقصى حماس)"},
+    // LK_T_MAXSTYLE
+    {@"Множитель стиля x10 + Сейв банка", @"Style Multiplier x10 + Save Pot", @"مضاعف الأسلوب x10 وحفظ الرصيد"},
+    // LK_T_SHOTCLOCK
+    {@"Заморозить ShotClock (14 сек)", @"Freeze ShotClock (14s)", @"تجميد وقت الهجمة (14 ثانية)"},
+    // LK_T_OVERTIME
+    {@"Бесконечное время Overtime (60 сек)", @"Freeze Overtime Clock (60s)", @"تجميد وقت الإضافي (60 ثانية)"},
+    // LK_T_NOSTOPS
+    {@"Бесконечные жизни (No Stops)", @"Infinite Lives (Zero Stops)", @"حياة غير محدودة (بدون خسارة)"},
+    // LK_T_NODEFENDER
+    {@"Отключить перехваты у защитника", @"Disable Defender Steals & Reads", @"تعطيل سرقة الكرة من المدافع"},
+    // LK_T_INSTANTWIN
+    {@"Победа за 1 мяч (15pt Mode)", @"Instant 1-Bucket Win (15pt Mode)", @"الفوز من أول سلة (طور 15)"},
+    // LK_T_RGBBOARD
+    {@"Космическая RGB-подсветка щита", @"Cosmic RGB Backboard LED", @"إضاءة اللوحة الخلفية RGB"},
+    // LK_B_CASH100K
+    {@"+100,000 Cash", @"+100,000 Cash", @"+100,000 كاش"},
+    // LK_B_CASH1M
+    {@"+1,000,000 Cash", @"+1,000,000 Cash", @"+1,000,000 كاش"},
+    // LK_B_UNLOCKALL
+    {@"Открыть весь гардероб", @"Unlock Full Wardrobe", @"فتح جميع الملابس"},
+    // LK_B_BATTLEPASS
+    {@"Battle Pass + 500 побед", @"Unlock Pass + 500 Wins", @"فتح الباس + 500 فوز"},
+    // LK_B_LUCKYDROP
+    {@"Сброс таймера Lucky Drop", @"Reset Lucky Drop Timer", @"تصفير مؤقت عجلة الحظ"},
+    // LK_B_INSTANTMAKE
+    {@"Засчитать попадание", @"Instant Score Bucket", @"تسجيل نقطة فورية"},
+    // LK_B_SKIPTUT
+    {@"Пропустить туториал", @"Complete & Skip Tutorial", @"تخطي التدريب"},
+    // LK_B_BOARDPULSE
+    {@"Импульс подсветки щита", @"Trigger Backboard Pulse", @"تشغيل وميض اللوحة"},
+    // LK_SET_LANG_HDR
+    {@"✦ ЯЗЫК ИНТЕРФЕЙСА / LANGUAGE / اللغة", @"✦ INTERFACE LANGUAGE", @"✦ لغة القائمة"},
+    // LK_SET_OPACITY_HDR
+    {@"✦ НЕПРОЗРАЧНОСТЬ МЕНЮ", @"✦ MENU OPACITY", @"✦ شفافية القائمة"},
+    // LK_SET_THEME_HDR
+    {@"✦ КОСМИЧЕСКАЯ ТЕМА ОФОРМЛЕНИЯ", @"✦ COSMIC COLOR THEME", @"✦ الثيم الفضائي"},
+    // LK_SET_FX_HDR
+    {@"✦ ВИЗУАЛЬНЫЕ И ТАКТИЛЬНЫЕ ЭФФЕКТЫ", @"✦ VISUAL & HAPTIC EFFECTS", @"✦ المؤثرات البصرية والاهتزاز"},
+    // LK_FX_STARFIELD
+    {@"Анимированная звёздная пыль (Starfield)", @"Animated Cosmic Starfield", @"نجوم فضائية متحركة في الخلفية"},
+    // LK_FX_NEONPULSE
+    {@"Неоновое дыхание рамки (Neon Pulse)", @"Neon Border Pulse Glow", @"توهج النيون المتردد للإطار"},
+    // LK_FX_HAPTICS
+    {@"Тактильный отклик (Haptic Feedback)", @"Tactile Haptic Feedback", @"اهتزاز التفاعل عند اللمس"},
+    // LK_THEME_NEBULA
+    {@"Nebula", @"Nebula", @"سديم"},
+    // LK_THEME_CYBER
+    {@"Supernova", @"Supernova", @"سوبرنوفا"},
+    // LK_THEME_PULSAR
+    {@"Pulsar", @"Pulsar", @"نجم نابض"},
+    // LK_CR_ROLE
+    {@"iOS Modding • Reverse Engineering • No-JB / Sideload", @"iOS Modding • Reverse Engineering • No-JB / Sideload", @"تعديل ألعاب iOS • هندسة عكسية • بدون جلبريك"},
+    // LK_CR_BIO
+    {@"Автор модификации и реверс-инжиниринга игры.\n\nВ Telegram-канале выходят свежие обновления мода, эксклюзивные dylib-сборки, разборы дампов Il2Cpp и готовые IPA под Sideload без джейлбрейка.",
+     @"Creator of this modification and game reverse engineering.\n\nJoin our Telegram channel for the latest mod updates, exclusive dylib builds, Il2Cpp dump analysis, and ready-to-sideload IPA releases without Jailbreak.",
+     @"مطور هذا التعديل والهندسة العكسية للعبة.\n\nتابع قناتنا على تيليجرام للحصول على أحدث التحديثات، ملفات dylib الحصرية، وتحليلات Il2Cpp وملفات IPA الجاهزة للتثبيت بدون جلبريك."},
+    // LK_CR_OPEN_TG
+    {@"🚀 Открыть Telegram: t.me/xantapers", @"🚀 Open Telegram: t.me/xantapers", @"🚀 فتح تيليجرام: t.me/xantapers"},
+    // LK_CR_COPY_TG
+    {@"📋 Скопировать ссылку @xantapers", @"📋 Copy @xantapers Link", @"📋 نسخ رابط @xantapers"},
+    // LK_NOTE_100K
+    {@"+100k Cash начислено", @"+100k Cash added", @"تمت إضافة 100 ألف كاش"},
+    // LK_NOTE_1M
+    {@"+1M Cash начислено", @"+1M Cash added", @"تمت إضافة مليون كاش"},
+    // LK_NOTE_ITEMS
+    {@"Гардероб открыт", @"Wardrobe unlocked", @"تم فتح جميع الملابس"},
+    // LK_NOTE_PASS
+    {@"Battle Pass активирован", @"Battle Pass unlocked", @"تم تفعيل الباتل باس"},
+    // LK_NOTE_DROP
+    {@"Lucky Drop сброшен", @"Lucky Drop reset", @"تم تصفير عجلة الحظ"},
+    // LK_NOTE_MAKE
+    {@"Мяч засчитан", @"Bucket scored", @"تم تسجيل السلة"},
+    // LK_NOTE_TUT
+    {@"Туториал закрыт", @"Tutorial skipped", @"تم تخطي التدريب"},
+    // LK_NOTE_COPIED
+    {@"Ссылка скопирована", @"Link copied", @"تم نسخ الرابط"}
+};
+
+static NSString *Tr(LKey key) {
+    int l = g_Config.lang;
+    if (l < 0 || l > 2) l = 0;
+    return kLocTable[key][l];
+}
 
 // ============================================================================
 // МГНОВЕННЫЕ ФУНКЦИИ (ACTIONS)
@@ -254,11 +443,37 @@ static int32_t ActionUnlockAllShopItems() {
     return grantedCount;
 }
 
+static void ActionPulseBackboard() {
+    auto fnActive = GetMethod<Fn_Backboard_get_Active>(Offsets::BackboardLights_get_Active);
+    uintptr_t bl = fnActive ? fnActive(nullptr) : 0;
+    if (bl != 0) {
+        auto fnPlay = GetMethod<Fn_Backboard_PlayMake>(Offsets::BackboardLights_PlayMake);
+        if (fnPlay) fnPlay(bl, nullptr);
+    }
+}
+
 // ============================================================================
-// ЦИКЛ ОБНОВЛЕНИЯ ПЕРЕКЛЮЧАТЕЛЕЙ (30 ГЦ, ТОЛЬКО HEAP — БЕЗ JIT / БЕЗ JB)
+// ЦИКЛ ОБНОВЛЕНИЯ (30 ГЦ, HEAP PATCHING — БЕЗ JIT / БЕЗ JB)
 // ============================================================================
 static void OnModTick() {
     if (!ResolveUnityBase()) return;
+
+    g_HuePhase = fmodf(g_HuePhase + 0.012f, 1.0f);
+
+    // 0. Космическая RGB-подсветка щита (BackboardLights)
+    if (g_Config.rainbowBackboard) {
+        auto fnActive = GetMethod<Fn_Backboard_get_Active>(Offsets::BackboardLights_get_Active);
+        uintptr_t bl = fnActive ? fnActive(nullptr) : 0;
+        if (bl != 0) {
+            CGFloat r = 1.0, g = 1.0, b = 1.0, a = 1.0;
+            [[UIColor colorWithHue:g_HuePhase saturation:0.95 brightness:1.0 alpha:1.0] getRed:&r green:&g blue:&b alpha:&a];
+            WriteField<float>(bl, Offsets::BL_Field_makeColor_r, (float)r);
+            WriteField<float>(bl, Offsets::BL_Field_makeColor_g, (float)g);
+            WriteField<float>(bl, Offsets::BL_Field_makeColor_b, (float)b);
+            WriteField<float>(bl, Offsets::BL_Field_makeColor_a, 1.0f);
+            WriteField<float>(bl, Offsets::BL_Field_brightness, 12.0f);
+        }
+    }
 
     // 1. Заморозка ShotClock
     if (g_Config.freezeShotClock) {
@@ -386,16 +601,28 @@ static void OnModTick() {
 }
 
 // ============================================================================
-// UI-ОВЕРЛЕЙ С ДВУМЯ ВКЛАДКАМИ: [Hacks] И [Creator]
+// КОСМИЧЕСКИЙ UI-ОВЕРЛЕЙ (@xantapers) — 3 ВКЛАДКИ, 3 ЯЗЫКА, STARFIELD & NEON
 // ============================================================================
 @interface TrinityModOverlay : NSObject
 @property (nonatomic, strong) UIButton *floatingBtn;
 @property (nonatomic, strong) UIView *panelView;
+@property (nonatomic, strong) CAGradientLayer *cosmicGradient;
+@property (nonatomic, strong) UIView *starfieldContainer;
+@property (nonatomic, strong) NSMutableArray<CALayer *> *starLayers;
+@property (nonatomic, strong) NSMutableArray<NSNumber *> *starSpeeds;
+@property (nonatomic, strong) UILabel *headerSubtitle;
+@property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UISegmentedControl *tabControl;
 @property (nonatomic, strong) UIScrollView *hacksScroll;
+@property (nonatomic, strong) UIScrollView *settingsScroll;
 @property (nonatomic, strong) UIView *creatorView;
-@property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, UILabel *> *locLabels;
+@property (nonatomic, strong) NSMutableDictionary<NSNumber *, UIButton *> *locButtons;
+@property (nonatomic, strong) NSMutableArray<UISwitch *> *allSwitches;
+@property (nonatomic, strong) UISegmentedControl *themeSeg;
+@property (nonatomic, strong) UILabel *opacityValueLbl;
 @property (nonatomic, strong) NSTimer *tickTimer;
+@property (nonatomic, assign) float neonPhase;
 + (instancetype)shared;
 - (void)setupIfNeeded;
 @end
@@ -407,6 +634,11 @@ static void OnModTick() {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         instance = [[TrinityModOverlay alloc] init];
+        instance.locLabels = [NSMutableDictionary dictionary];
+        instance.locButtons = [NSMutableDictionary dictionary];
+        instance.allSwitches = [NSMutableArray array];
+        instance.starLayers = [NSMutableArray array];
+        instance.starSpeeds = [NSMutableArray array];
     });
     return instance;
 }
@@ -425,6 +657,51 @@ static void OnModTick() {
     return nil;
 }
 
+- (UIColor *)primaryAccent {
+    switch (g_Config.themePreset) {
+        case 1:  return [UIColor colorWithRed:0.00 green:0.88 blue:1.00 alpha:1.0]; // Cyber Supernova (Cyan)
+        case 2:  return [UIColor colorWithRed:1.00 green:0.22 blue:0.55 alpha:1.0]; // Crimson Pulsar (Magenta-Red)
+        default: return [UIColor colorWithRed:0.62 green:0.35 blue:1.00 alpha:1.0]; // Nebula Violet
+    }
+}
+
+- (UIColor *)secondaryAccent {
+    switch (g_Config.themePreset) {
+        case 1:  return [UIColor colorWithRed:0.45 green:0.25 blue:1.00 alpha:1.0];
+        case 2:  return [UIColor colorWithRed:1.00 green:0.55 blue:0.15 alpha:1.0];
+        default: return [UIColor colorWithRed:0.15 green:0.82 blue:1.00 alpha:1.0];
+    }
+}
+
+- (NSArray *)gradientColorsForPreset {
+    switch (g_Config.themePreset) {
+        case 1: // Cyber Supernova
+            return @[
+                (id)[UIColor colorWithRed:0.02 green:0.05 blue:0.14 alpha:1.0].CGColor,
+                (id)[UIColor colorWithRed:0.04 green:0.12 blue:0.24 alpha:1.0].CGColor,
+                (id)[UIColor colorWithRed:0.02 green:0.04 blue:0.10 alpha:1.0].CGColor
+            ];
+        case 2: // Crimson Pulsar
+            return @[
+                (id)[UIColor colorWithRed:0.12 green:0.02 blue:0.09 alpha:1.0].CGColor,
+                (id)[UIColor colorWithRed:0.20 green:0.04 blue:0.14 alpha:1.0].CGColor,
+                (id)[UIColor colorWithRed:0.07 green:0.02 blue:0.08 alpha:1.0].CGColor
+            ];
+        default: // Nebula Violet
+            return @[
+                (id)[UIColor colorWithRed:0.05 green:0.03 blue:0.14 alpha:1.0].CGColor,
+                (id)[UIColor colorWithRed:0.11 green:0.05 blue:0.24 alpha:1.0].CGColor,
+                (id)[UIColor colorWithRed:0.03 green:0.03 blue:0.10 alpha:1.0].CGColor
+            ];
+    }
+}
+
+- (void)triggerHaptic {
+    if (!g_Config.fxHaptics) return;
+    UIImpactFeedbackGenerator *gen = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleLight];
+    [gen impactOccurred];
+}
+
 - (void)setupIfNeeded {
     UIWindow *win = [self activeKeyWindow];
     if (!win) {
@@ -435,19 +712,21 @@ static void OnModTick() {
     }
     if (self.floatingBtn) return;
 
-    UIColor *accent = [UIColor colorWithRed:0.96 green:0.55 blue:0.14 alpha:1.0];
-    UIColor *bgDark = [UIColor colorWithRed:0.08 green:0.08 blue:0.11 alpha:0.96];
-    UIColor *cardBg = [UIColor colorWithRed:0.14 green:0.14 blue:0.19 alpha:1.0];
+    UIColor *accent = [self primaryAccent];
 
-    // 1. Плавающая кнопка открытия меню
+    // 1. Космическая плавающая кнопка "✦ MOD"
     self.floatingBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    self.floatingBtn.frame = CGRectMake(20, 120, 56, 56);
-    self.floatingBtn.backgroundColor = bgDark;
-    self.floatingBtn.layer.cornerRadius = 28;
+    self.floatingBtn.frame = CGRectMake(20, 120, 60, 60);
+    self.floatingBtn.backgroundColor = [UIColor colorWithRed:0.06 green:0.04 blue:0.15 alpha:0.94];
+    self.floatingBtn.layer.cornerRadius = 30;
     self.floatingBtn.layer.borderWidth = 2.0;
     self.floatingBtn.layer.borderColor = accent.CGColor;
-    [self.floatingBtn setTitle:@"MOD" forState:UIControlStateNormal];
-    self.floatingBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
+    self.floatingBtn.layer.shadowColor = accent.CGColor;
+    self.floatingBtn.layer.shadowRadius = 10.0;
+    self.floatingBtn.layer.shadowOpacity = 0.85;
+    self.floatingBtn.layer.shadowOffset = CGSizeZero;
+    [self.floatingBtn setTitle:@"✦ MOD" forState:UIControlStateNormal];
+    self.floatingBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     [self.floatingBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     [self.floatingBtn addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
 
@@ -455,53 +734,84 @@ static void OnModTick() {
     [self.floatingBtn addGestureRecognizer:pan];
     [win addSubview:self.floatingBtn];
 
-    // 2. Главная панель меню
-    CGFloat panelW = 320.0;
-    CGFloat panelH = 480.0;
+    // 2. Широкая космическая панель меню (370 x 510)
     CGFloat screenW = win.bounds.size.width;
     CGFloat screenH = win.bounds.size.height;
+    CGFloat panelW = MIN(374.0, screenW - 20.0);
+    CGFloat panelH = MIN(520.0, screenH - 70.0);
+
     self.panelView = [[UIView alloc] initWithFrame:CGRectMake((screenW - panelW) / 2.0, (screenH - panelH) / 2.0, panelW, panelH)];
-    self.panelView.backgroundColor = bgDark;
-    self.panelView.layer.cornerRadius = 18;
-    self.panelView.layer.borderWidth = 1.5;
+    self.panelView.backgroundColor = [UIColor colorWithRed:0.04 green:0.03 blue:0.10 alpha:1.0];
+    self.panelView.alpha = g_Config.menuOpacity;
+    self.panelView.layer.cornerRadius = 22;
+    self.panelView.layer.borderWidth = 1.8;
     self.panelView.layer.borderColor = accent.CGColor;
+    self.panelView.layer.shadowColor = accent.CGColor;
+    self.panelView.layer.shadowRadius = 18.0;
+    self.panelView.layer.shadowOpacity = 0.75;
+    self.panelView.layer.shadowOffset = CGSizeZero;
     self.panelView.clipsToBounds = YES;
     self.panelView.hidden = YES;
 
-    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, panelW, 92)];
-    headerView.backgroundColor = [UIColor colorWithRed:0.11 green:0.11 blue:0.15 alpha:1.0];
+    // Космический градиентный фон
+    self.cosmicGradient = [CAGradientLayer layer];
+    self.cosmicGradient.frame = self.panelView.bounds;
+    self.cosmicGradient.colors = [self gradientColorsForPreset];
+    self.cosmicGradient.startPoint = CGPointMake(0.0, 0.0);
+    self.cosmicGradient.endPoint = CGPointMake(1.0, 1.0);
+    [self.panelView.layer insertSublayer:self.cosmicGradient atIndex:0];
+
+    // Слой анимированной звёздной пыли (Starfield)
+    self.starfieldContainer = [[UIView alloc] initWithFrame:self.panelView.bounds];
+    self.starfieldContainer.userInteractionEnabled = NO;
+    [self.panelView addSubview:self.starfieldContainer];
+    [self buildStarfieldWithSize:self.panelView.bounds.size];
+
+    // 3. Шапка меню
+    UIView *headerView = [[UIView alloc] initWithFrame:CGRectMake(0, 0, panelW, 102)];
+    headerView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.32];
     UIPanGestureRecognizer *headerPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(handlePanelPan:)];
     [headerView addGestureRecognizer:headerPan];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 10, panelW - 56, 22)];
-    title.text = @"ONES MOD MENU // @xantapers";
-    title.textColor = accent;
-    title.font = [UIFont boldSystemFontOfSize:15];
-    [headerView addSubview:title];
+    UILabel *titleLbl = [[UILabel alloc] initWithFrame:CGRectMake(18, 10, panelW - 90, 20)];
+    titleLbl.text = @"✦ ONES COSMIC // @xantapers";
+    titleLbl.textColor = [UIColor whiteColor];
+    titleLbl.font = [UIFont boldSystemFontOfSize:16];
+    [headerView addSubview:titleLbl];
+
+    self.headerSubtitle = [[UILabel alloc] initWithFrame:CGRectMake(18, 30, 140, 15)];
+    self.headerSubtitle.text = Tr(LK_HEADER_SUB);
+    self.headerSubtitle.textColor = [self secondaryAccent];
+    self.headerSubtitle.font = [UIFont boldSystemFontOfSize:10];
+    [headerView addSubview:self.headerSubtitle];
+
+    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(150, 30, panelW - 196, 15)];
+    self.statusLabel.text = @"Cash: ---";
+    self.statusLabel.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
+    self.statusLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+    self.statusLabel.textAlignment = NSTextAlignmentRight;
+    [headerView addSubview:self.statusLabel];
 
     UIButton *closeBtn = [UIButton buttonWithType:UIButtonTypeCustom];
-    closeBtn.frame = CGRectMake(panelW - 38, 8, 28, 28);
-    closeBtn.backgroundColor = cardBg;
+    closeBtn.frame = CGRectMake(panelW - 42, 12, 28, 28);
+    closeBtn.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.10];
     closeBtn.layer.cornerRadius = 14;
+    closeBtn.layer.borderWidth = 1.0;
+    closeBtn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.22].CGColor;
     [closeBtn setTitle:@"✕" forState:UIControlStateNormal];
     [closeBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     closeBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     [closeBtn addTarget:self action:@selector(toggleMenu) forControlEvents:UIControlEventTouchUpInside];
     [headerView addSubview:closeBtn];
 
-    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectMake(16, 32, panelW - 32, 18)];
-    self.statusLabel.text = @"Cash: ---";
-    self.statusLabel.textColor = [UIColor colorWithWhite:0.75 alpha:1.0];
-    self.statusLabel.font = [UIFont systemFontOfSize:12];
-    [headerView addSubview:self.statusLabel];
-
-    // Переключатель вкладок: Hacks | Creator
-    self.tabControl = [[UISegmentedControl alloc] initWithItems:@[@"Hacks", @"Creator"]];
-    self.tabControl.frame = CGRectMake(16, 54, panelW - 32, 30);
+    // Переключатель 3 вкладок: Функции | Настройки | Автор
+    self.tabControl = [[UISegmentedControl alloc] initWithItems:@[Tr(LK_TAB_HACKS), Tr(LK_TAB_SETTINGS), Tr(LK_TAB_CREATOR)]];
+    self.tabControl.frame = CGRectMake(16, 56, panelW - 32, 34);
     self.tabControl.selectedSegmentIndex = 0;
+    self.tabControl.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.07];
     self.tabControl.selectedSegmentTintColor = accent;
-    NSDictionary *normalAttrs = @{NSForegroundColorAttributeName: [UIColor lightGrayColor], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
-    NSDictionary *selectedAttrs = @{NSForegroundColorAttributeName: [UIColor blackColor], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
+    NSDictionary *normalAttrs = @{NSForegroundColorAttributeName: [UIColor colorWithWhite:0.82 alpha:1.0], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
+    NSDictionary *selectedAttrs = @{NSForegroundColorAttributeName: [UIColor whiteColor], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
     [self.tabControl setTitleTextAttributes:normalAttrs forState:UIControlStateNormal];
     [self.tabControl setTitleTextAttributes:selectedAttrs forState:UIControlStateSelected];
     [self.tabControl addTarget:self action:@selector(onTabChanged:) forControlEvents:UIControlEventValueChanged];
@@ -509,40 +819,22 @@ static void OnModTick() {
 
     [self.panelView addSubview:headerView];
 
-    // 3. Контейнер вкладки HACKS (UIScrollView со всеми 18 функциями)
-    CGRect contentFrame = CGRectMake(0, 92, panelW, panelH - 92);
+    // 4. Контентные контейнеры для 3 вкладок
+    CGRect contentFrame = CGRectMake(0, 102, panelW, panelH - 102);
+
     self.hacksScroll = [[UIScrollView alloc] initWithFrame:contentFrame];
     self.hacksScroll.showsVerticalScrollIndicator = YES;
     self.hacksScroll.alwaysBounceVertical = YES;
-
-    CGFloat y = 12.0;
-    [self addSectionHeader:@"БРОСКИ, ДАНКИ И ГЕЙМПЛЕЙ (LIVE)" y:&y];
-    [self addToggle:@"Авто-идеальный бросок (Auto Green)" tag:1 y:&y];
-    [self addToggle:@"Игнорировать защиту (No Contest)" tag:2 y:&y];
-    [self addToggle:@"Дальние данки (Long Range Dunk)" tag:3 y:&y];
-    [self addToggle:@"Заморозить ShotClock (14 сек)" tag:4 y:&y];
-    [self addToggle:@"Бесконечное время Overtime (60 сек)" tag:5 y:&y];
-    [self addToggle:@"Бесконечные жизни (No Stops)" tag:6 y:&y];
-    [self addToggle:@"Множитель стиля x10 + Сейв банка" tag:7 y:&y];
-    [self addToggle:@"Вечный огонь (Always On Fire)" tag:8 y:&y];
-    [self addToggle:@"Каждый бросок = 3 очка" tag:9 y:&y];
-    [self addToggle:@"Отключить перехваты у защитника" tag:10 y:&y];
-    [self addToggle:@"Победа за 1 мяч (15pt Mode)" tag:11 y:&y];
-
-    y += 6.0;
-    [self addSectionHeader:@"ЭКОНОМИКА, ГАРДЕРОБ И ПРОПУСК" y:&y];
-    [self addActionButton:@"+100,000 Cash (Safe Checksum)" selector:@selector(onAddCash100k) y:&y];
-    [self addActionButton:@"+1,000,000 Cash (Safe Checksum)" selector:@selector(onAddCash1m) y:&y];
-    [self addActionButton:@"Открыть весь гардероб (ShopCatalogue)" selector:@selector(onUnlockAllItems) y:&y];
-    [self addActionButton:@"Открыть Battle Pass + 500 побед" selector:@selector(onUnlockPass) y:&y];
-    [self addActionButton:@"Сбросить таймер Lucky Drop" selector:@selector(onResetLuckyDrop) y:&y];
-    [self addActionButton:@"Засчитать попадание (Instant Make)" selector:@selector(onInstantMake) y:&y];
-    [self addActionButton:@"Пропустить туториал" selector:@selector(onSkipTutorial) y:&y];
-
-    self.hacksScroll.contentSize = CGSizeMake(panelW, y + 16.0);
+    [self buildHacksTabWithWidth:panelW];
     [self.panelView addSubview:self.hacksScroll];
 
-    // 4. Контейнер вкладки CREATOR (@xantapers)
+    self.settingsScroll = [[UIScrollView alloc] initWithFrame:contentFrame];
+    self.settingsScroll.showsVerticalScrollIndicator = YES;
+    self.settingsScroll.alwaysBounceVertical = YES;
+    self.settingsScroll.hidden = YES;
+    [self buildSettingsTabWithWidth:panelW];
+    [self.panelView addSubview:self.settingsScroll];
+
     self.creatorView = [[UIView alloc] initWithFrame:contentFrame];
     self.creatorView.hidden = YES;
     [self buildCreatorTabWithWidth:panelW];
@@ -557,183 +849,461 @@ static void OnModTick() {
                                                      repeats:YES];
 }
 
+// ============================================================================
+// ПОСТРОЕНИЕ STARFIELD (ЗВЁЗДНОЙ ПЫЛИ)
+// ============================================================================
+- (void)buildStarfieldWithSize:(CGSize)size {
+    for (int i = 0; i < 36; ++i) {
+        CALayer *star = [CALayer layer];
+        CGFloat d = (i % 3 == 0) ? 3.0 : ((i % 2 == 0) ? 2.0 : 1.4);
+        CGFloat x = (CGFloat)(arc4random_uniform((uint32_t)MAX(size.width, 320)));
+        CGFloat y = (CGFloat)(arc4random_uniform((uint32_t)MAX(size.height, 480)));
+        star.frame = CGRectMake(x, y, d, d);
+        star.cornerRadius = d / 2.0;
+        CGFloat alpha = 0.25 + ((arc4random_uniform(65)) / 100.0);
+        if (i % 5 == 0) {
+            star.backgroundColor = [UIColor colorWithRed:0.55 green:0.85 blue:1.0 alpha:alpha].CGColor;
+        } else if (i % 7 == 0) {
+            star.backgroundColor = [UIColor colorWithRed:0.85 green:0.55 blue:1.0 alpha:alpha].CGColor;
+        } else {
+            star.backgroundColor = [UIColor colorWithWhite:1.0 alpha:alpha].CGColor;
+        }
+        [self.starfieldContainer.layer addSublayer:star];
+        [self.starLayers addObject:star];
+        float spd = 0.22f + ((arc4random_uniform(55)) / 100.0f);
+        [self.starSpeeds addObject:@(spd)];
+    }
+}
+
+// ============================================================================
+// ВКЛАДКА 1: HACKS (АККУРАТНЫЕ КАРТОЧКИ + ДВУХКОЛОНОЧНАЯ СЕТКА КНОПОК)
+// ============================================================================
+- (void)buildHacksTabWithWidth:(CGFloat)panelW {
+    CGFloat y = 12.0;
+
+    // Секция 1: Броски, данки и стиль
+    [self addSectionHeaderKey:LK_SEC_SHOOTING toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_AUTOGREEN  tag:1  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_NOCONTEST  tag:2  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_LONGDUNK   tag:3  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_ALWAYS3PT  tag:9  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_ONFIRE     tag:8  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_MAXSTYLE   tag:7  toView:self.hacksScroll y:&y width:panelW];
+
+    y += 6.0;
+    // Секция 2: Таймеры, защита и режимы
+    [self addSectionHeaderKey:LK_SEC_TIMERS toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_SHOTCLOCK  tag:4  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_OVERTIME   tag:5  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_NOSTOPS    tag:6  toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_NODEFENDER tag:10 toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_INSTANTWIN tag:11 toView:self.hacksScroll y:&y width:panelW];
+    [self addToggleKey:LK_T_RGBBOARD   tag:12 toView:self.hacksScroll y:&y width:panelW];
+
+    y += 8.0;
+    // Секция 3: Экономика, гардероб и пропуск (аккуратная сетка 2 колонки)
+    [self addSectionHeaderKey:LK_SEC_ECONOMY toView:self.hacksScroll y:&y width:panelW];
+    [self addGridButtonPairLeftKey:LK_B_CASH100K leftSel:@selector(onAddCash100k)
+                          rightKey:LK_B_CASH1M   rightSel:@selector(onAddCash1m)
+                                 y:&y width:panelW];
+    [self addGridButtonPairLeftKey:LK_B_UNLOCKALL  leftSel:@selector(onUnlockAllItems)
+                          rightKey:LK_B_BATTLEPASS rightSel:@selector(onUnlockPass)
+                                 y:&y width:panelW];
+    [self addGridButtonPairLeftKey:LK_B_LUCKYDROP   leftSel:@selector(onResetLuckyDrop)
+                          rightKey:LK_B_INSTANTMAKE rightSel:@selector(onInstantMake)
+                                 y:&y width:panelW];
+    [self addGridButtonPairLeftKey:LK_B_SKIPTUT    leftSel:@selector(onSkipTutorial)
+                          rightKey:LK_B_BOARDPULSE rightSel:@selector(onPulseBoard)
+                                 y:&y width:panelW];
+
+    self.hacksScroll.contentSize = CGSizeMake(panelW, y + 18.0);
+}
+
+// ============================================================================
+// ВКЛАДКА 2: SETTINGS (ЯЗЫК RU/EN/AR, НЕПРОЗРАЧНОСТЬ, КОСМИЧЕСКИЕ ЭФФЕКТЫ)
+// ============================================================================
+- (void)buildSettingsTabWithWidth:(CGFloat)panelW {
+    CGFloat y = 14.0;
+    UIColor *accent = [self primaryAccent];
+
+    // 1. Выбор языка (Русский | English | العربية)
+    [self addSectionHeaderKey:LK_SET_LANG_HDR toView:self.settingsScroll y:&y width:panelW];
+    UISegmentedControl *langSeg = [[UISegmentedControl alloc] initWithItems:@[@"Русский", @"English", @"العربية"]];
+    langSeg.frame = CGRectMake(16, y, panelW - 32, 36);
+    langSeg.selectedSegmentIndex = g_Config.lang;
+    langSeg.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
+    langSeg.selectedSegmentTintColor = accent;
+    NSDictionary *nAttr = @{NSForegroundColorAttributeName: [UIColor colorWithWhite:0.85 alpha:1.0], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
+    NSDictionary *sAttr = @{NSForegroundColorAttributeName: [UIColor whiteColor], NSFontAttributeName: [UIFont boldSystemFontOfSize:13]};
+    [langSeg setTitleTextAttributes:nAttr forState:UIControlStateNormal];
+    [langSeg setTitleTextAttributes:sAttr forState:UIControlStateSelected];
+    [langSeg addTarget:self action:@selector(onLanguageChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.settingsScroll addSubview:langSeg];
+    y += 48.0;
+
+    // 2. Слайдер непрозрачности меню
+    [self addSectionHeaderKey:LK_SET_OPACITY_HDR toView:self.settingsScroll y:&y width:panelW];
+    UIView *opCard = [[UIView alloc] initWithFrame:CGRectMake(16, y, panelW - 32, 46)];
+    opCard.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
+    opCard.layer.cornerRadius = 12;
+    opCard.layer.borderWidth = 1.0;
+    opCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
+
+    UISlider *opSlider = [[UISlider alloc] initWithFrame:CGRectMake(14, 8, panelW - 110, 30)];
+    opSlider.minimumValue = 0.45f;
+    opSlider.maximumValue = 1.00f;
+    opSlider.value = g_Config.menuOpacity;
+    opSlider.minimumTrackTintColor = accent;
+    [opSlider addTarget:self action:@selector(onOpacityChanged:) forControlEvents:UIControlEventValueChanged];
+    [opCard addSubview:opSlider];
+
+    self.opacityValueLbl = [[UILabel alloc] initWithFrame:CGRectMake(panelW - 90, 8, 46, 30)];
+    self.opacityValueLbl.text = [NSString stringWithFormat:@"%d%%", (int)(g_Config.menuOpacity * 100)];
+    self.opacityValueLbl.textColor = [UIColor whiteColor];
+    self.opacityValueLbl.font = [UIFont boldSystemFontOfSize:13];
+    self.opacityValueLbl.textAlignment = NSTextAlignmentRight;
+    [opCard addSubview:self.opacityValueLbl];
+
+    [self.settingsScroll addSubview:opCard];
+    y += 58.0;
+
+    // 3. Космическая тема (Nebula | Supernova | Pulsar)
+    [self addSectionHeaderKey:LK_SET_THEME_HDR toView:self.settingsScroll y:&y width:panelW];
+    self.themeSeg = [[UISegmentedControl alloc] initWithItems:@[Tr(LK_THEME_NEBULA), Tr(LK_THEME_CYBER), Tr(LK_THEME_PULSAR)]];
+    self.themeSeg.frame = CGRectMake(16, y, panelW - 32, 36);
+    self.themeSeg.selectedSegmentIndex = g_Config.themePreset;
+    self.themeSeg.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
+    self.themeSeg.selectedSegmentTintColor = accent;
+    [self.themeSeg setTitleTextAttributes:nAttr forState:UIControlStateNormal];
+    [self.themeSeg setTitleTextAttributes:sAttr forState:UIControlStateSelected];
+    [self.themeSeg addTarget:self action:@selector(onThemeChanged:) forControlEvents:UIControlEventValueChanged];
+    [self.settingsScroll addSubview:self.themeSeg];
+    y += 48.0;
+
+    // 4. Визуальные и тактильные эффекты
+    [self addSectionHeaderKey:LK_SET_FX_HDR toView:self.settingsScroll y:&y width:panelW];
+    [self addToggleKey:LK_FX_STARFIELD tag:101 toView:self.settingsScroll y:&y width:panelW initialOn:g_Config.fxStarfield];
+    [self addToggleKey:LK_FX_NEONPULSE tag:102 toView:self.settingsScroll y:&y width:panelW initialOn:g_Config.fxNeonPulse];
+    [self addToggleKey:LK_FX_HAPTICS   tag:103 toView:self.settingsScroll y:&y width:panelW initialOn:g_Config.fxHaptics];
+
+    self.settingsScroll.contentSize = CGSizeMake(panelW, y + 20.0);
+}
+
+// ============================================================================
+// ВКЛАДКА 3: CREATOR (@xantapers)
+// ============================================================================
 - (void)buildCreatorTabWithWidth:(CGFloat)panelW {
-    UIColor *accent = [UIColor colorWithRed:0.96 green:0.55 blue:0.14 alpha:1.0];
-    UIColor *cardBg = [UIColor colorWithRed:0.13 green:0.13 blue:0.18 alpha:1.0];
-    UIColor *tgBlue = [UIColor colorWithRed:0.14 green:0.63 blue:0.87 alpha:1.0];
+    UIColor *accent = [self primaryAccent];
+    UIColor *tgBlue = [UIColor colorWithRed:0.14 green:0.63 blue:0.92 alpha:1.0];
 
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 16, panelW - 32, 230)];
-    card.backgroundColor = cardBg;
-    card.layer.cornerRadius = 14;
-    card.layer.borderWidth = 1.0;
-    card.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.12].CGColor;
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(16, 16, panelW - 32, 238)];
+    card.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
+    card.layer.cornerRadius = 16;
+    card.layer.borderWidth = 1.2;
+    card.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.16].CGColor;
 
-    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake((panelW - 32 - 56) / 2.0, 16, 56, 56)];
-    badge.backgroundColor = [UIColor colorWithRed:0.20 green:0.20 blue:0.27 alpha:1.0];
-    badge.layer.cornerRadius = 28;
+    UILabel *badge = [[UILabel alloc] initWithFrame:CGRectMake((panelW - 32 - 60) / 2.0, 16, 60, 60)];
+    badge.backgroundColor = [UIColor colorWithRed:0.12 green:0.08 blue:0.26 alpha:1.0];
+    badge.layer.cornerRadius = 30;
     badge.layer.borderWidth = 2.0;
     badge.layer.borderColor = accent.CGColor;
     badge.clipsToBounds = YES;
-    badge.text = @"X";
-    badge.textColor = accent;
-    badge.font = [UIFont boldSystemFontOfSize:26];
+    badge.text = @"✦ X";
+    badge.textColor = [UIColor whiteColor];
+    badge.font = [UIFont boldSystemFontOfSize:22];
     badge.textAlignment = NSTextAlignmentCenter;
     [card addSubview:badge];
 
-    UILabel *handleLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 80, panelW - 56, 24)];
+    UILabel *handleLbl = [[UILabel alloc] initWithFrame:CGRectMake(14, 82, panelW - 60, 24)];
     handleLbl.text = @"@xantapers";
     handleLbl.textColor = [UIColor whiteColor];
-    handleLbl.font = [UIFont boldSystemFontOfSize:18];
+    handleLbl.font = [UIFont boldSystemFontOfSize:19];
     handleLbl.textAlignment = NSTextAlignmentCenter;
     [card addSubview:handleLbl];
 
-    UILabel *roleLbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 104, panelW - 56, 18)];
-    roleLbl.text = @"iOS Modding • Reverse Engineering • No-JB / Sideload";
-    roleLbl.textColor = accent;
+    UILabel *roleLbl = [[UILabel alloc] initWithFrame:CGRectMake(14, 106, panelW - 60, 18)];
+    roleLbl.text = Tr(LK_CR_ROLE);
+    roleLbl.textColor = [self secondaryAccent];
     roleLbl.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
     roleLbl.textAlignment = NSTextAlignmentCenter;
     [card addSubview:roleLbl];
+    self.locLabels[@(LK_CR_ROLE)] = roleLbl;
 
-    UILabel *bioLbl = [[UILabel alloc] initWithFrame:CGRectMake(14, 128, panelW - 60, 90)];
-    bioLbl.text = @"Автор модификации и реверс-инжиниринга игры.\n\nВ Telegram-канале выходят свежие обновления мода, эксклюзивные dylib-сборки, разборы дампов Il2Cpp и готовые IPA под Sideload без джейлбрейка.";
-    bioLbl.textColor = [UIColor colorWithWhite:0.82 alpha:1.0];
+    UILabel *bioLbl = [[UILabel alloc] initWithFrame:CGRectMake(16, 130, panelW - 64, 96)];
+    bioLbl.text = Tr(LK_CR_BIO);
+    bioLbl.textColor = [UIColor colorWithWhite:0.86 alpha:1.0];
     bioLbl.font = [UIFont systemFontOfSize:12];
     bioLbl.numberOfLines = 0;
     bioLbl.textAlignment = NSTextAlignmentCenter;
     [card addSubview:bioLbl];
+    self.locLabels[@(LK_CR_BIO)] = bioLbl;
 
     [self.creatorView addSubview:card];
 
     UIButton *tgBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    tgBtn.frame = CGRectMake(16, 260, panelW - 32, 44);
+    tgBtn.frame = CGRectMake(16, 268, panelW - 32, 46);
     tgBtn.backgroundColor = tgBlue;
-    tgBtn.layer.cornerRadius = 10;
-    [tgBtn setTitle:@"Открыть Telegram: t.me/xantapers" forState:UIControlStateNormal];
+    tgBtn.layer.cornerRadius = 12;
+    tgBtn.layer.shadowColor = tgBlue.CGColor;
+    tgBtn.layer.shadowRadius = 8.0;
+    tgBtn.layer.shadowOpacity = 0.5;
+    tgBtn.layer.shadowOffset = CGSizeZero;
+    [tgBtn setTitle:Tr(LK_CR_OPEN_TG) forState:UIControlStateNormal];
     [tgBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     tgBtn.titleLabel.font = [UIFont boldSystemFontOfSize:14];
     [tgBtn addTarget:self action:@selector(onOpenTelegram) forControlEvents:UIControlEventTouchUpInside];
     [self.creatorView addSubview:tgBtn];
+    self.locButtons[@(LK_CR_OPEN_TG)] = tgBtn;
 
     UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
-    copyBtn.frame = CGRectMake(16, 314, panelW - 32, 38);
-    copyBtn.backgroundColor = cardBg;
-    copyBtn.layer.cornerRadius = 10;
-    copyBtn.layer.borderWidth = 1.0;
+    copyBtn.frame = CGRectMake(16, 324, panelW - 32, 42);
+    copyBtn.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.07];
+    copyBtn.layer.cornerRadius = 12;
+    copyBtn.layer.borderWidth = 1.2;
     copyBtn.layer.borderColor = accent.CGColor;
-    [copyBtn setTitle:@"Скопировать @xantapers" forState:UIControlStateNormal];
-    [copyBtn setTitleColor:accent forState:UIControlStateNormal];
+    [copyBtn setTitle:Tr(LK_CR_COPY_TG) forState:UIControlStateNormal];
+    [copyBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     copyBtn.titleLabel.font = [UIFont boldSystemFontOfSize:13];
     [copyBtn addTarget:self action:@selector(onCopyTelegram) forControlEvents:UIControlEventTouchUpInside];
     [self.creatorView addSubview:copyBtn];
+    self.locButtons[@(LK_CR_COPY_TG)] = copyBtn;
 }
 
-- (void)addSectionHeader:(NSString *)text y:(CGFloat *)y {
-    UILabel *hdr = [[UILabel alloc] initWithFrame:CGRectMake(16, *y, 288, 18)];
-    hdr.text = text;
-    hdr.textColor = [UIColor colorWithRed:0.96 green:0.55 blue:0.14 alpha:1.0];
+// ============================================================================
+// UI-ХЕЛПЕРЫ ДЛЯ СТРОК И СЕТКИ
+// ============================================================================
+- (void)addSectionHeaderKey:(LKey)key toView:(UIView *)parent y:(CGFloat *)y width:(CGFloat)panelW {
+    UILabel *hdr = [[UILabel alloc] initWithFrame:CGRectMake(18, *y, panelW - 36, 18)];
+    hdr.text = Tr(key);
+    hdr.textColor = [self secondaryAccent];
     hdr.font = [UIFont boldSystemFontOfSize:11];
-    [self.hacksScroll addSubview:hdr];
+    [parent addSubview:hdr];
+    self.locLabels[@(key)] = hdr;
     *y += 22.0;
 }
 
-- (void)addToggle:(NSString *)text tag:(NSInteger)tag y:(CGFloat *)y {
-    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(14, *y, 292, 36)];
-    row.backgroundColor = [UIColor colorWithRed:0.13 green:0.13 blue:0.18 alpha:1.0];
-    row.layer.cornerRadius = 8;
-
-    UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(10, 0, 222, 36)];
-    lbl.text = text;
-    lbl.textColor = [UIColor whiteColor];
-    lbl.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
-    [row addSubview:lbl];
-
-    UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(234, 2.5, 50, 30)];
-    sw.tag = tag;
-    sw.onTintColor = [UIColor colorWithRed:0.96 green:0.55 blue:0.14 alpha:1.0];
-    [sw addTarget:self action:@selector(onSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-    [row addSubview:sw];
-
-    [self.hacksScroll addSubview:row];
-    *y += 40.0;
+- (void)addToggleKey:(LKey)key tag:(NSInteger)tag toView:(UIView *)parent y:(CGFloat *)y width:(CGFloat)panelW {
+    [self addToggleKey:key tag:tag toView:parent y:y width:panelW initialOn:NO];
 }
 
-- (void)addActionButton:(NSString *)text selector:(SEL)sel y:(CGFloat *)y {
+- (void)addToggleKey:(LKey)key tag:(NSInteger)tag toView:(UIView *)parent y:(CGFloat *)y width:(CGFloat)panelW initialOn:(BOOL)initOn {
+    CGFloat rowW = panelW - 32.0;
+    UIView *row = [[UIView alloc] initWithFrame:CGRectMake(16, *y, rowW, 40)];
+    row.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.06];
+    row.layer.cornerRadius = 11;
+    row.layer.borderWidth = 1.0;
+    row.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.10].CGColor;
+
+    UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(12, 0, rowW - 74, 40)];
+    lbl.text = Tr(key);
+    lbl.textColor = [UIColor whiteColor];
+    lbl.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
+    lbl.adjustsFontSizeToFitWidth = YES;
+    lbl.minimumScaleFactor = 0.8;
+    [row addSubview:lbl];
+    self.locLabels[@(key)] = lbl;
+
+    UISwitch *sw = [[UISwitch alloc] initWithFrame:CGRectMake(rowW - 58, 4.5, 50, 30)];
+    sw.tag = tag;
+    sw.on = initOn;
+    sw.onTintColor = [self primaryAccent];
+    [sw addTarget:self action:@selector(onSwitchChanged:) forControlEvents:UIControlEventValueChanged];
+    [row addSubview:sw];
+    [self.allSwitches addObject:sw];
+
+    [parent addSubview:row];
+    *y += 45.0;
+}
+
+- (void)addGridButtonPairLeftKey:(LKey)leftKey leftSel:(SEL)leftSel
+                        rightKey:(LKey)rightKey rightSel:(SEL)rightSel
+                               y:(CGFloat *)y width:(CGFloat)panelW {
+    CGFloat gap = 10.0;
+    CGFloat btnW = (panelW - 32.0 - gap) / 2.0;
+
+    UIButton *b1 = [self makeCosmicButtonWithFrame:CGRectMake(16, *y, btnW, 40) key:leftKey selector:leftSel];
+    UIButton *b2 = [self makeCosmicButtonWithFrame:CGRectMake(16 + btnW + gap, *y, btnW, 40) key:rightKey selector:rightSel];
+
+    [self.hacksScroll addSubview:b1];
+    [self.hacksScroll addSubview:b2];
+    *y += 46.0;
+}
+
+- (UIButton *)makeCosmicButtonWithFrame:(CGRect)frame key:(LKey)key selector:(SEL)sel {
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
-    btn.frame = CGRectMake(14, *y, 292, 36);
-    btn.backgroundColor = [UIColor colorWithRed:0.17 green:0.17 blue:0.24 alpha:1.0];
-    btn.layer.cornerRadius = 8;
+    btn.frame = frame;
+    btn.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.08];
+    btn.layer.cornerRadius = 11;
     btn.layer.borderWidth = 1.0;
-    btn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.10].CGColor;
-    [btn setTitle:text forState:UIControlStateNormal];
+    btn.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.18].CGColor;
+    [btn setTitle:Tr(key) forState:UIControlStateNormal];
     [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
-    btn.titleLabel.font = [UIFont boldSystemFontOfSize:12];
+    btn.titleLabel.font = [UIFont boldSystemFontOfSize:11.5];
+    btn.titleLabel.adjustsFontSizeToFitWidth = YES;
+    btn.titleLabel.minimumScaleFactor = 0.75;
     [btn addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
-    [self.hacksScroll addSubview:btn];
-    *y += 42.0;
+    self.locButtons[@(key)] = btn;
+    return btn;
+}
+
+// ============================================================================
+// ОБНОВЛЕНИЕ ЛОКАЛИЗАЦИИ И ТЕМЫ В РЕАЛЬНОМ ВРЕМЕНИ
+// ============================================================================
+- (void)applyLanguage {
+    BOOL isArabic = (g_Config.lang == 2);
+    NSTextAlignment align = isArabic ? NSTextAlignmentRight : NSTextAlignmentLeft;
+
+    self.headerSubtitle.text = Tr(LK_HEADER_SUB);
+    [self.tabControl setTitle:Tr(LK_TAB_HACKS) forSegmentAtIndex:0];
+    [self.tabControl setTitle:Tr(LK_TAB_SETTINGS) forSegmentAtIndex:1];
+    [self.tabControl setTitle:Tr(LK_TAB_CREATOR) forSegmentAtIndex:2];
+
+    [self.themeSeg setTitle:Tr(LK_THEME_NEBULA) forSegmentAtIndex:0];
+    [self.themeSeg setTitle:Tr(LK_THEME_CYBER) forSegmentAtIndex:1];
+    [self.themeSeg setTitle:Tr(LK_THEME_PULSAR) forSegmentAtIndex:2];
+
+    for (NSNumber *numKey in self.locLabels) {
+        LKey k = (LKey)numKey.intValue;
+        UILabel *lbl = self.locLabels[numKey];
+        lbl.text = Tr(k);
+        if (k != LK_CR_ROLE && k != LK_CR_BIO) {
+            lbl.textAlignment = align;
+        }
+    }
+
+    for (NSNumber *numKey in self.locButtons) {
+        LKey k = (LKey)numKey.intValue;
+        UIButton *btn = self.locButtons[numKey];
+        [btn setTitle:Tr(k) forState:UIControlStateNormal];
+    }
+}
+
+- (void)applyTheme {
+    UIColor *accent = [self primaryAccent];
+    UIColor *sec = [self secondaryAccent];
+
+    self.cosmicGradient.colors = [self gradientColorsForPreset];
+    self.panelView.layer.borderColor = accent.CGColor;
+    self.panelView.layer.shadowColor = accent.CGColor;
+    self.floatingBtn.layer.borderColor = accent.CGColor;
+    self.floatingBtn.layer.shadowColor = accent.CGColor;
+    self.tabControl.selectedSegmentTintColor = accent;
+    self.themeSeg.selectedSegmentTintColor = accent;
+    self.headerSubtitle.textColor = sec;
+
+    for (UISwitch *sw in self.allSwitches) {
+        sw.onTintColor = accent;
+    }
 }
 
 // ============================================================================
 // ОБРАБОТЧИКИ СОБЫТИЙ UI
 // ============================================================================
 - (void)onTabChanged:(UISegmentedControl *)seg {
-    BOOL isHacks = (seg.selectedSegmentIndex == 0);
-    self.hacksScroll.hidden = !isHacks;
-    self.creatorView.hidden = isHacks;
+    [self triggerHaptic];
+    NSInteger idx = seg.selectedSegmentIndex;
+    self.hacksScroll.hidden    = (idx != 0);
+    self.settingsScroll.hidden = (idx != 1);
+    self.creatorView.hidden    = (idx != 2);
+}
+
+- (void)onLanguageChanged:(UISegmentedControl *)seg {
+    [self triggerHaptic];
+    g_Config.lang = (int)seg.selectedSegmentIndex;
+    [self applyLanguage];
+}
+
+- (void)onOpacityChanged:(UISlider *)slider {
+    g_Config.menuOpacity = slider.value;
+    self.panelView.alpha = slider.value;
+    self.opacityValueLbl.text = [NSString stringWithFormat:@"%d%%", (int)(slider.value * 100)];
+}
+
+- (void)onThemeChanged:(UISegmentedControl *)seg {
+    [self triggerHaptic];
+    g_Config.themePreset = (int)seg.selectedSegmentIndex;
+    [self applyTheme];
 }
 
 - (void)onSwitchChanged:(UISwitch *)sender {
+    [self triggerHaptic];
     switch (sender.tag) {
-        case 1:  g_Config.autoGreenRelease = sender.isOn; break;
-        case 2:  g_Config.noContestPenalty = sender.isOn; break;
-        case 3:  g_Config.longRangeDunk    = sender.isOn; break;
-        case 4:  g_Config.freezeShotClock  = sender.isOn; break;
-        case 5:  g_Config.freezeOvertime   = sender.isOn; break;
-        case 6:  g_Config.infiniteStops    = sender.isOn; break;
-        case 7:  g_Config.maxStyleMult     = sender.isOn; break;
-        case 8:  g_Config.alwaysOnFire     = sender.isOn; break;
-        case 9:  g_Config.alwaysThreePoint = sender.isOn; break;
-        case 10: g_Config.disableDefender  = sender.isOn; break;
-        case 11: g_Config.instantWin15Pt   = sender.isOn; break;
+        case 1:   g_Config.autoGreenRelease = sender.isOn; break;
+        case 2:   g_Config.noContestPenalty = sender.isOn; break;
+        case 3:   g_Config.longRangeDunk    = sender.isOn; break;
+        case 4:   g_Config.freezeShotClock  = sender.isOn; break;
+        case 5:   g_Config.freezeOvertime   = sender.isOn; break;
+        case 6:   g_Config.infiniteStops    = sender.isOn; break;
+        case 7:   g_Config.maxStyleMult     = sender.isOn; break;
+        case 8:   g_Config.alwaysOnFire     = sender.isOn; break;
+        case 9:   g_Config.alwaysThreePoint = sender.isOn; break;
+        case 10:  g_Config.disableDefender  = sender.isOn; break;
+        case 11:  g_Config.instantWin15Pt   = sender.isOn; break;
+        case 12:  g_Config.rainbowBackboard = sender.isOn; break;
+        case 101:
+            g_Config.fxStarfield = sender.isOn;
+            self.starfieldContainer.hidden = !sender.isOn;
+            break;
+        case 102:
+            g_Config.fxNeonPulse = sender.isOn;
+            if (!sender.isOn) [self applyTheme];
+            break;
+        case 103:
+            g_Config.fxHaptics = sender.isOn;
+            break;
         default: break;
     }
 }
 
 - (void)onAddCash100k {
+    [self triggerHaptic];
     ActionAddCash(100000);
-    [self refreshStatusWithNote:@"+100k Cash начислено"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_100K)];
 }
 
 - (void)onAddCash1m {
+    [self triggerHaptic];
     ActionAddCash(1000000);
-    [self refreshStatusWithNote:@"+1M Cash начислено"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_1M)];
 }
 
 - (void)onUnlockAllItems {
+    [self triggerHaptic];
     int32_t count = ActionUnlockAllShopItems();
-    [self refreshStatusWithNote:[NSString stringWithFormat:@"Открыто вещей: %d", count]];
+    [self refreshStatusWithNote:[NSString stringWithFormat:@"%@ (%d)", Tr(LK_NOTE_ITEMS), count]];
 }
 
 - (void)onUnlockPass {
+    [self triggerHaptic];
     ActionUnlockBattlePass();
-    [self refreshStatusWithNote:@"Battle Pass + 500 побед активированы"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_PASS)];
 }
 
 - (void)onResetLuckyDrop {
+    [self triggerHaptic];
     ActionResetLuckyDrop();
-    [self refreshStatusWithNote:@"Кулдаун Lucky Drop сброшен"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_DROP)];
 }
 
 - (void)onInstantMake {
+    [self triggerHaptic];
     ActionScoreBucket();
-    [self refreshStatusWithNote:@"Попадание засчитано"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_MAKE)];
 }
 
 - (void)onSkipTutorial {
+    [self triggerHaptic];
     ActionSkipTutorial();
-    [self refreshStatusWithNote:@"Туториал пропущен"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_TUT)];
+}
+
+- (void)onPulseBoard {
+    [self triggerHaptic];
+    ActionPulseBackboard();
 }
 
 - (void)onOpenTelegram {
+    [self triggerHaptic];
     NSURL *tgAppUrl = [NSURL URLWithString:@"tg://resolve?domain=xantapers"];
     NSURL *tgWebUrl = [NSURL URLWithString:@"https://t.me/xantapers"];
     UIApplication *app = [UIApplication sharedApplication];
@@ -745,20 +1315,22 @@ static void OnModTick() {
 }
 
 - (void)onCopyTelegram {
+    [self triggerHaptic];
     [UIPasteboard generalPasteboard].string = @"https://t.me/xantapers";
-    [self refreshStatusWithNote:@"Ссылка t.me/xantapers скопирована"];
+    [self refreshStatusWithNote:Tr(LK_NOTE_COPIED)];
 }
 
 - (void)refreshStatusWithNote:(NSString *)note {
     int64_t cash = ActionGetCash();
     if (note && note.length > 0) {
-        self.statusLabel.text = [NSString stringWithFormat:@"Cash: %lld  |  %@", cash, note];
+        self.statusLabel.text = [NSString stringWithFormat:@"$%lld • %@", cash, note];
     } else {
-        self.statusLabel.text = [NSString stringWithFormat:@"Cash: %lld", cash];
+        self.statusLabel.text = [NSString stringWithFormat:@"Cash: $%lld", cash];
     }
 }
 
 - (void)toggleMenu {
+    [self triggerHaptic];
     self.panelView.hidden = !self.panelView.hidden;
     if (!self.panelView.hidden) {
         [self refreshStatusWithNote:nil];
@@ -787,8 +1359,45 @@ static void OnModTick() {
     [pan setTranslation:CGPointZero inView:win];
 }
 
+// ============================================================================
+// ТАЙМЕР ИГРОВОЙ ЛОГИКИ И КОСМИЧЕСКИХ АНИМАЦИЙ (30 ГЦ)
+// ============================================================================
 - (void)onTimerTick {
     OnModTick();
+
+    if (self.panelView.hidden) return;
+
+    // 1. Анимация дрейфа звёзд (Starfield)
+    if (g_Config.fxStarfield && self.starLayers.count > 0) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        CGFloat maxH = self.panelView.bounds.size.height;
+        CGFloat maxW = self.panelView.bounds.size.width;
+        for (NSUInteger i = 0; i < self.starLayers.count; ++i) {
+            CALayer *star = self.starLayers[i];
+            float spd = self.starSpeeds[i].floatValue;
+            CGRect f = star.frame;
+            f.origin.y -= spd;
+            if (f.origin.y < -4.0) {
+                f.origin.y = maxH + 2.0;
+                f.origin.x = (CGFloat)arc4random_uniform((uint32_t)MAX(maxW, 320));
+            }
+            star.frame = f;
+        }
+        [CATransaction commit];
+    }
+
+    // 2. Анимация неонового дыхания рамки (Neon Border Pulse)
+    if (g_Config.fxNeonPulse) {
+        self.neonPhase = fmodf(self.neonPhase + 0.015f, 1.0f);
+        CGFloat baseHue = (g_Config.themePreset == 1) ? 0.53 : ((g_Config.themePreset == 2) ? 0.92 : 0.74);
+        CGFloat shift = sinf(self.neonPhase * (float)M_PI * 2.0f) * 0.08f;
+        CGFloat hue = fmodf((float)baseHue + shift + 1.0f, 1.0f);
+        UIColor *pulseColor = [UIColor colorWithHue:hue saturation:0.88 brightness:1.0 alpha:1.0];
+        self.panelView.layer.borderColor = pulseColor.CGColor;
+        self.panelView.layer.shadowColor = pulseColor.CGColor;
+        self.floatingBtn.layer.borderColor = pulseColor.CGColor;
+    }
 }
 
 @end
