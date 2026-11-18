@@ -1,0 +1,63 @@
+name: Build iOS Dylib
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-dylib:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compile arm64 iOS Dylib (build.mm)
+        run: |
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "Using iOS SDK: $SDK_PATH"
+
+          if [ -f "build.mm" ]; then
+            ENTRY_FILE="build.mm"
+          elif [ -f "src/build.mm" ]; then
+            ENTRY_FILE="src/build.mm"
+          else
+            ENTRY_FILE="tweak.mm"
+          fi
+
+          xcrun --sdk iphoneos clang++ \
+            -arch arm64 \
+            -isysroot "$SDK_PATH" \
+            -miphoneos-version-min=15.0 \
+            -std=c++20 \
+            -fobjc-arc \
+            -dynamiclib \
+            -O2 \
+            -I. \
+            -I./src \
+            -Wl,-install_name,@executable_path/Frameworks/xantapers.dylib \
+            -framework Foundation \
+            -framework UIKit \
+            -framework CoreGraphics \
+            -framework QuartzCore \
+            "$ENTRY_FILE" \
+            -o xantapers.dylib
+
+          cp xantapers.dylib TrinityOnesMod.dylib
+          file xantapers.dylib
+          ls -lh xantapers.dylib TrinityOnesMod.dylib
+
+      - name: Upload compiled dylib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xantapers-ios-dylib
+          path: |
+            xantapers.dylib
+            TrinityOnesMod.dylib
+          if-no-files-found: error
